@@ -1,4 +1,5 @@
 import logging
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -17,6 +18,19 @@ logger = logging.getLogger("queuepilot.scheduler")
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def mark_stale_workers(session: Session) -> None:
+    settings = get_settings()
+    cutoff = _now() - timedelta(seconds=settings.heartbeat_timeout_seconds)
+    stale = session.scalars(
+        select(Worker).where(
+            Worker.state == "HEALTHY",
+            or_(Worker.last_heartbeat.is_(None), Worker.last_heartbeat < cutoff),
+        )
+    )
+    for worker in stale:
+        worker.state = "UNHEALTHY"
 
 
 def promote_retries(session: Session) -> None:
@@ -237,14 +251,18 @@ def publish_outbox(session: Session, redis: Redis) -> None:
 
 
 def dispatch_once(session: Session, redis: Redis) -> int:
+    mark_stale_workers(session)
     promote_retries(session)
     recover_expired_leases(session)
     session.commit()
     publish_outbox(session, redis)
     dispatched = 0
     for _ in range(available_slots(session)):
-        if not reserve_next(session):
+        started = time.perf_counter()
+        reserved = reserve_next(session)
+        if not reserved:
             break
+        redis.set("queuepilot:scheduling_overhead_ms", f"{(time.perf_counter() - started) * 1000:.3f}")
         dispatched += 1
     publish_outbox(session, redis)
     return dispatched

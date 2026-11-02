@@ -45,7 +45,10 @@ class JobOut(BaseModel):
     result: dict | None
     error_message: str | None
     attempt_count: int
+    estimated_cost: int
+    cancellation_requested: bool
     created_at: datetime
+    dispatched_at: datetime | None
     started_at: datetime | None
     finished_at: datetime | None
     attempts: list[AttemptOut] = []
@@ -77,7 +80,10 @@ def _job_out(job: Job, attempts: list[JobAttempt] | None = None) -> JobOut:
         result=job.result,
         error_message=job.error_message,
         attempt_count=job.attempt_count,
+        estimated_cost=job.estimated_cost,
+        cancellation_requested=job.cancellation_requested,
         created_at=job.created_at,
+        dispatched_at=job.dispatched_at,
         started_at=job.started_at,
         finished_at=job.finished_at,
         attempts=[AttemptOut.model_validate(attempt) for attempt in attempts or []],
@@ -149,12 +155,15 @@ def create_job(
 @router.get("", response_model=list[JobOut])
 def list_jobs(
     status: str | None = None,
+    job_type: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[JobOut]:
     statement = _visible_jobs(user).order_by(Job.created_at.desc()).limit(200)
     if status:
         statement = statement.where(Job.status == status)
+    if job_type:
+        statement = statement.where(Job.type == job_type)
     return [_job_out(job) for job in db.scalars(statement)]
 
 

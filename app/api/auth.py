@@ -18,6 +18,8 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    role: str
+    email: str
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -27,4 +29,4 @@ def login(body: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
     if user is None or not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Incorrect email or password")
     token = create_access_token(user_id=user.id, tenant_id=user.tenant_id, role=user.role)
-    return TokenResponse(access_token=token)
+    return TokenResponse(access_token=token, role=user.role, email=user.email)

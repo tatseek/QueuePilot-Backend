@@ -17,7 +17,7 @@ def main() -> None:
     check_redis()
     settings = get_settings()
     redis = Redis.from_url(settings.redis_url, decode_responses=True)
-    logger.info("FIFO scheduler is selecting queued jobs.")
+    logger.info("Scheduler is selecting queued jobs.")
     while True:
         try:
             with SessionLocal() as session:

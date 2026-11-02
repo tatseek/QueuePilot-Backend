@@ -1,4 +1,5 @@
 import logging
+import signal
 import threading
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -12,6 +13,7 @@ from app.core.settings import get_settings
 from app.db import SessionLocal
 from app.models import Job, JobAttempt, JobEvent, JobStatus, Worker
 from app.monitoring.checks import check_database, check_redis
+from app.workers.retry import retry_delay_seconds
 from app.workers.tasks import TaskCancelled, execute_task
 
 logger = logging.getLogger("queuepilot.worker")
@@ -47,8 +49,13 @@ def heartbeat(session: Session, worker_id: uuid.UUID, job_id: uuid.UUID | None) 
     settings = get_settings()
     session.execute(
         update(Worker)
-        .where(Worker.id == worker_id)
+        .where(Worker.id == worker_id, Worker.state.in_(("HEALTHY", "UNHEALTHY")))
         .values(last_heartbeat=now, state="HEALTHY")
+    )
+    session.execute(
+        update(Worker)
+        .where(Worker.id == worker_id, Worker.state == "DRAINING")
+        .values(last_heartbeat=now)
     )
     if job_id is not None:
         session.execute(
@@ -137,7 +144,7 @@ def handle_delivery(redis, worker_id: uuid.UUID, message_id: str, fields: dict) 
             return
         if status == JobStatus.FAILED.value and job.attempt_count < job.max_attempts:
             job.status = JobStatus.RETRY_WAIT.value
-            job.retry_after = _now() + timedelta(seconds=2 ** min(job.attempt_count, 5))
+            job.retry_after = _now() + timedelta(seconds=retry_delay_seconds(job.attempt_count))
             job.error_message = error
             job.lease_expires_at = None
             attempt.state = JobStatus.FAILED.value
@@ -149,8 +156,39 @@ def handle_delivery(redis, worker_id: uuid.UUID, message_id: str, fields: dict) 
     redis.xack(settings.dispatch_stream, settings.worker_group, message_id)
 
 
+_stop = threading.Event()
+
+
+def _request_stop(signum, frame) -> None:
+    del signum, frame
+    _stop.set()
+
+
+def _heartbeat_loop(worker_id: uuid.UUID, current: dict) -> None:
+    while not _stop.is_set():
+        try:
+            with SessionLocal() as session:
+                heartbeat(session, worker_id, current.get("job"))
+        except Exception:
+            logger.exception("Heartbeat failed")
+        if _stop.wait(4):
+            return
+
+
+def _leave(worker_id: uuid.UUID) -> None:
+    with SessionLocal() as session:
+        session.execute(
+            update(Worker).where(Worker.id == worker_id).values(state="STOPPED", last_heartbeat=_now())
+        )
+        session.commit()
+    logger.info("Worker %s stopped.", worker_id)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
+    signal.signal(signal.SIGINT, _request_stop)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _request_stop)
     check_database()
     check_redis()
     settings = get_settings()
@@ -161,11 +199,16 @@ def main() -> None:
         register_worker(session, worker_id)
     consumer = str(worker_id)
     logger.info("Worker %s is waiting for jobs.", worker_id)
-    current_job: uuid.UUID | None = None
+    current: dict[str, uuid.UUID | None] = {"job": None}
+    threading.Thread(target=_heartbeat_loop, args=(worker_id, current), name=f"heartbeat-{worker_id}", daemon=True).start()
     while True:
         try:
             with SessionLocal() as session:
-                heartbeat(session, worker_id, current_job)
+                worker = session.get(Worker, worker_id)
+                if worker is not None and (_stop.is_set() or worker.state == "DRAINING"):
+                    _leave(worker_id)
+                    return
+                heartbeat(session, worker_id, current.get("job"))
             claimed = redis.xautoclaim(
                 settings.dispatch_stream,
                 settings.worker_group,
@@ -186,12 +229,17 @@ def main() -> None:
                 if batches:
                     messages = batches[0][1]
             if not messages:
-                current_job = None
+                current["job"] = None
                 continue
+            with SessionLocal() as session:
+                worker = session.get(Worker, worker_id)
+                if _stop.is_set() or (worker is not None and worker.state == "DRAINING"):
+                    _leave(worker_id)
+                    return
             message_id, fields = messages[0]
-            current_job = uuid.UUID(fields["job_id"])
+            current["job"] = uuid.UUID(fields["job_id"])
             handle_delivery(redis, worker_id, message_id, fields)
-            current_job = None
+            current["job"] = None
         except Exception:
             logger.exception("Worker loop failed")
             threading.Event().wait(1)

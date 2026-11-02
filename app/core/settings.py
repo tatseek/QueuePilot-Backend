@@ -16,6 +16,13 @@ class Settings(BaseSettings):
     scheduler_interval_seconds: float = 0.5
     heartbeat_timeout_seconds: int = 15
     lease_seconds: int = 30
+    autoscaler_min_workers: int = 1
+    autoscaler_max_workers: int = 5
+    autoscaler_interval_seconds: float = 5
+    autoscaler_cooldown_seconds: int = 30
+    autoscaler_high_pressure: float = 10
+    autoscaler_low_pressure: float = 2
+    autoscaler_samples: int = 3
 
     model_config = SettingsConfigDict(
         env_file=BACKEND_DIR / ".env",

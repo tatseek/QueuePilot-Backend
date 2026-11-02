@@ -1,19 +1,21 @@
 # QueuePilot Backend
 
-Multi-tenant job API, scheduler, and workers. PostgreSQL is the source of truth. Redis Streams carry dispatch messages. This repository is the foundation milestone: schema, health check, and demo tenants.
+Multi-tenant job API, scheduler, workers, and a host-side autoscaler. PostgreSQL stores the queue. Redis Streams carry one dispatch message per reserved job.
 
-Credentials in `.env.example` and `docker-compose.yml` are for this local database only.
+Credentials in `.env.example` and `docker-compose.yml` are for this local database only. Do not point them at Supabase.
 
 The dashboard lives in the separate frontend repository.
 
 ## Requirements
 
-- Docker Desktop with WSL2
 - Python 3.12+
+- PostgreSQL and Redis on localhost
+
+On this machine those run as native programs on `D:`, not in Docker. `docker-compose.yml` remains for a computer where Docker already works. Start three workers there with `docker compose up --build -d --scale worker=3` once the image exists. This laptop starts workers as extra Python processes instead.
 
 ## Start locally
 
-PostgreSQL and Redis run on this machine, with their files on `D:`. From this directory, with both already listening:
+With PostgreSQL on `127.0.0.1:5432` and Redis on `127.0.0.1:6379`:
 
 ```powershell
 .\.venv\Scripts\python -m alembic upgrade head
@@ -21,42 +23,42 @@ PostgreSQL and Redis run on this machine, with their files on `D:`. From this di
 .\.venv\Scripts\uvicorn app.main:app --host 127.0.0.1 --port 8000
 .\.venv\Scripts\python -m app.scheduler.main
 .\.venv\Scripts\python -m app.workers.main
+.\.venv\Scripts\python -m app.workers.main
+.\.venv\Scripts\python -m app.workers.main
 ```
+
+The last three lines are the three worker replicas. One worker is enough for a smoke test.
 
 Health: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
 
 Demo logins use password `queuepilot`: `a@queuepilot.local`, `b@queuepilot.local`, `c@queuepilot.local`, and `admin@queuepilot.local`.
 
-`docker-compose.yml` is still here for a machine where Docker already works. It is not required to run the API.
-
-Scheduler and worker processes stay idle until dispatch is implemented. Start them with the API when you want the full process list:
+Optional autoscaler, from this directory:
 
 ```powershell
-docker compose up -d api scheduler worker
+.\.venv\Scripts\python scripts\autoscaler.py
 ```
 
-## Host-side API
+It keeps 1 to 5 healthy workers. A sustained queue above 10 jobs per worker adds one. A sustained queue below 2 drains an idle worker. Changes wait 30 seconds and are written to `scaling_events`.
 
-With Postgres and Redis already published on localhost:
+Optional load test, after `pip install -r requirements.txt`:
 
 ```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-copy .env.example .env
-alembic upgrade head
-py scripts\seed_demo.py
-uvicorn app.main:app --reload --port 8000
+.\.venv\Scripts\locust -f locustfile.py --host http://127.0.0.1:8000
 ```
 
 ## Tests
 
 ```powershell
-python -m pytest
+.\.venv\Scripts\python -m pytest
 ```
+
+Live tests call the local database and skip themselves when it is down.
 
 ## Docs
 
 - [Architecture](docs/architecture.md)
 - [API](docs/api.md)
 - [Experiments](docs/experiments.md)
+- [Report notes](docs/report.md)
+- [Viva](docs/viva.md)
