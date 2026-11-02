@@ -1,8 +1,19 @@
 # Experiments
 
-Runs come from `POST /api/admin/benchmarks` on this machine on 2 November 2026. Three healthy workers, seed 1, grouped arrival, short `hash_compute` jobs. The roadmap’s larger counts (for example 1000 / 50 / 10) are the same comparisons; these presets are the size that finishes here. Numbers are copied from the stored metrics, not estimated.
+Runs come from `POST /api/admin/benchmarks` on this machine. Three healthy workers, seed 1, grouped arrival, `hash_compute` at 1000 rounds. Numbers are copied from the stored metrics, not estimated. `scripts/run_study.py` repeats the large fairness pair.
 
 Jain’s index uses completed cost divided by weight. When every job in the preset finishes, that index does not change between algorithms, because the completed cost is the same. Waiting time is what changes. Both are reported.
+
+## Fairness study
+
+3 November 2026. A=1000, B=50, C=10. The scheduler considers the oldest 200 queued jobs of each tenant, so B and C stay visible behind A’s backlog. Every job finished. Jain’s index is 0.352 for both algorithms because the completed cost is the same; the difference is who waited.
+
+| Algorithm | Mean wait | P95 wait | Tenant A | Tenant B | Tenant C | Throughput |
+|---|---:|---:|---:|---:|---:|---:|
+| fifo | 103.7s | 194.7s | 103.4s | 109.0s | 103.9s | 5.18/s |
+| wdrr | 100.8s | 188.4s | 106.3s | 10.7s | 3.9s | 5.35/s |
+
+WDRR left Tenant A about the same (106.3s against 103.4s) and cut Tenant B from 109.0s to 10.7s and Tenant C from 103.9s to 3.9s. Overall mean and throughput barely moved. This is one pair on one laptop, not a repeated trial.
 
 ## Fairness preset
 
@@ -44,8 +55,17 @@ The decision rule is covered by unit tests: scale up after three samples above 1
 
 On this machine, with one healthy worker held on a 25 second sleep and 15 hash jobs waiting, `scripts/autoscaler.py` recorded `1 → 2` at 15:17 with the reason “queued jobs per worker stayed above the threshold”. Earlier idle samples recorded scale-down events (`3 → 2`, `2 → 1`). The autoscaler was then stopped so it would not keep changing the worker count.
 
-Workers refresh their heartbeat while a task is running, so a long sleep is not mistaken for a dead process. Lease recovery remains in the scheduler: if heartbeats do stop, an expired lease returns the job to `RETRY_WAIT` or `FAILED`. A redelivered stream entry whose attempt id is no longer current is acknowledged and not written as the result.
+Workers refresh their heartbeat while a task is running, so a long sleep is not mistaken for a dead process. If heartbeats do stop, an expired lease returns the job to `RETRY_WAIT` or `FAILED`. A redelivered stream entry whose attempt id is no longer current is acknowledged and not written as the result.
+
+On 3 November 2026 a 15 second sleep was killed while `RUNNING`. The job reached `COMPLETED` on attempt 2, 46.2 seconds after the process was stopped. That interval is the remaining 30 second lease plus the second execution. The first attempt did not stay as the result.
 
 ## Load
 
-`locustfile.py` submits `hash_compute` as Tenant A. It is the load entry point. A full Locust session was not recorded in this table.
+`locustfile.py`, Locust 2.32.9, 3 November 2026, 8 users, spawn rate 2, 20 seconds, against the API on this machine with three workers:
+
+| Request | Count | Failures | Median | P95 |
+|---|---:|---:|---:|---:|
+| POST `/api/jobs` | 225 | 0 | 7 ms | 12 ms |
+| POST `/api/auth/login` | 8 | 0 | 74 ms | 80 ms |
+
+All 225 hash jobs later completed. Their queue wait, measured from `started_at - created_at`, had mean 10.6s and p95 21.1s. Submit rate was about 12 requests per second, ahead of three workers, which is why the wait is seconds rather than milliseconds.

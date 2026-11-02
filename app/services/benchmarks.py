@@ -43,12 +43,12 @@ PRESETS: dict[str, dict] = {
 
 TENANT_NAMES = {"A": "Tenant A", "B": "Tenant B", "C": "Tenant C"}
 TERMINAL = {JobStatus.COMPLETED.value, JobStatus.FAILED.value, JobStatus.CANCELLED.value}
-MAX_JOBS = 100
+MAX_JOBS = 1200
 
 
 class WorkItem(BaseModel):
     tenant: str = Field(pattern="^[ABC]$")
-    count: int = Field(ge=1, le=40)
+    count: int = Field(ge=1, le=1200)
     type: str
     params: dict
     priority: int = Field(default=0, ge=0, le=10)
@@ -149,7 +149,7 @@ def _execute(run_id: UUID) -> None:
                     )
                     job_ids.append(job.id)
             session.commit()
-            deadline = time.monotonic() + 300
+            deadline = time.monotonic() + 900
             jobs: list[Job] = []
             while time.monotonic() < deadline:
                 session.expire_all()

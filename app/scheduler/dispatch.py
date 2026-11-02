@@ -115,32 +115,40 @@ def _state_row(session: Session) -> SchedulerState:
     return state
 
 
+# Oldest jobs per tenant, not the global oldest slice. A global cap would hide a small
+# tenant behind a long FIFO backlog, so weighted policies would never see it.
+PER_TENANT_WINDOW = 200
+
+
 def _eligible_jobs(session: Session) -> list[Job]:
     now = _now()
-    inflight_for_tenant = (
-        select(func.count())
-        .select_from(Job)
-        .where(
-            Job.tenant_id == Tenant.id,
-            Job.status.in_((JobStatus.DISPATCHED.value, JobStatus.RUNNING.value)),
-        )
-        .correlate(Tenant)
-        .scalar_subquery()
-    )
-    return list(
-        session.scalars(
-            select(Job)
-            .join(Tenant, Tenant.id == Job.tenant_id)
+    chosen: list[Job] = []
+    tenants = session.scalars(select(Tenant))
+    for tenant in tenants:
+        inflight = session.scalar(
+            select(func.count())
+            .select_from(Job)
             .where(
-                Job.status == JobStatus.QUEUED.value,
-                Job.cancellation_requested.is_(False),
-                or_(Job.retry_after.is_(None), Job.retry_after <= now),
-                inflight_for_tenant < Tenant.max_concurrent_jobs,
+                Job.tenant_id == tenant.id,
+                Job.status.in_((JobStatus.DISPATCHED.value, JobStatus.RUNNING.value)),
             )
-            .order_by(Job.created_at, Job.id)
-            .limit(500)
         )
-    )
+        if int(inflight or 0) >= tenant.max_concurrent_jobs:
+            continue
+        chosen.extend(
+            session.scalars(
+                select(Job)
+                .where(
+                    Job.tenant_id == tenant.id,
+                    Job.status == JobStatus.QUEUED.value,
+                    Job.cancellation_requested.is_(False),
+                    or_(Job.retry_after.is_(None), Job.retry_after <= now),
+                )
+                .order_by(Job.created_at, Job.id)
+                .limit(PER_TENANT_WINDOW)
+            )
+        )
+    return chosen
 
 
 def _store_fairness(state: SchedulerState, fairness: FairnessState) -> None:

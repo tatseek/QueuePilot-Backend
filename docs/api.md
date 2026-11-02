@@ -25,7 +25,7 @@ Demo password: `queuepilot`.
 | GET | `/api/admin/scaling` | Admin | Autoscaler events |
 | GET | `/health` | Public | PostgreSQL and Redis |
 
-Presets are `fairness`, `priority`, and `unequal_cost`. A custom workload is a list of `{tenant, count, type, params, priority}` with tenants `A`, `B`, or `C`, at most 100 jobs.
+Presets are `fairness`, `priority`, and `unequal_cost`. A custom workload is a list of `{tenant, count, type, params, priority}` with tenants `A`, `B`, or `C`, at most 1200 jobs.
 
 Task bodies use `params`:
 

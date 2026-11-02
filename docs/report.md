@@ -26,7 +26,7 @@ FastAPI serves the contract in [api.md](api.md). SQLAlchemy models match the roa
 
 ## 6. Algorithms
 
-Selection is a scan of the eligible set, capped at 500 oldest queued jobs that are under the tenant’s in-flight limit. FIFO and priority are sorts. WRR and WDRR walk tenants from a cursor and stop at the first job the current credit can pay for. Each successful reserve is one transaction with `FOR UPDATE SKIP LOCKED` on the chosen row.
+Selection reads the oldest 200 queued jobs of each tenant that is under its in-flight limit. A single global cap would hide a small tenant behind a long backlog. FIFO and priority are sorts. WRR and WDRR walk tenants from a cursor and stop at the first job the current credit can pay for. Each successful reserve is one transaction with `FOR UPDATE SKIP LOCKED` on the chosen row.
 
 ## 7. Evaluation
 
@@ -34,15 +34,15 @@ Timestamps `created_at`, `dispatched_at`, `started_at`, and `finished_at` are on
 
 ## 8. Results
 
-Copy completed runs from the Benchmarks screen, or from `GET /api/admin/benchmarks/{id}`, into [experiments.md](experiments.md). Report more than one repeat. If FIFO wins on throughput and WDRR wins on the small tenant’s wait, write both.
+The measured tables are in [experiments.md](experiments.md). On the A=1000, B=50, C=10 run, WDRR cut the small tenants’ mean wait from about 109s and 104s to 10.7s and 3.9s, while Tenant A stayed near 106s and throughput stayed near 5.3 jobs per second. Jain’s index did not move, because both runs finished every job. The smaller presets show the same pattern for fairness, the priority reversal, and a case where WDRR lost on throughput. Killing a worker during a 15 second sleep recovered the job on attempt 2 in 46.2 seconds. A 20 second Locust run submitted 225 jobs with no HTTP failures.
 
 ## 9. Limitations
 
-One machine, cooperative cancellation, at-least-once stream delivery, and a scheduler interval of half a second all change the waits. Heartbeats and leases are wall-clock based. The benchmark switches the live policy and restores it afterward, so it should be the only writer during a run. Preset sizes are smaller than the full study counts.
+One machine, cooperative cancellation, at-least-once stream delivery, and a scheduler interval of half a second all change the waits. Heartbeats and leases are wall-clock based. The benchmark switches the live policy and restores it afterward, so it should be the only writer during a run. The large fairness pair was run once. The scheduler looks at 200 jobs per tenant per pass, not the entire backlog.
 
 ## 10. Future work
 
-Larger repeated runs, a recorded failure latency, and WebSocket updates. The polling dashboard already shows the same data.
+Repeat the large pair and report the spread. WebSocket updates are optional. The polling dashboard already shows the same data.
 
 ## Demo script
 
