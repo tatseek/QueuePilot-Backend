@@ -4,6 +4,30 @@ Tenant identity will come from the authenticated token. Clients do not send `ten
 
 ## Available now
 
+### `POST /api/auth/login`
+
+Body: `email`, `password`. Demo password is `queuepilot`.
+
+### `GET /api/tenants/me`
+
+Current user and tenant. Requires the access token.
+
+### `POST /api/jobs`
+
+Returns 202. Body uses `type`, `priority`, and `params`. Types: `sleep`, `hash_compute`, `report_generate`.
+
+### `GET /api/jobs` and `GET /api/jobs/{id}`
+
+Tenant users only see their own jobs.
+
+### `POST /api/jobs/{id}/cancel`
+
+Queued jobs become `CANCELLED`. Running jobs set a cooperative cancel flag.
+
+### `GET /api/admin/scheduler` and `PATCH /api/admin/scheduler`
+
+Admin only. Policy is `fifo`, `priority`, `wrr`, or `wdrr`. The change applies to later dispatches.
+
 ### `GET /health`
 
 Returns 200 when PostgreSQL and Redis both respond.

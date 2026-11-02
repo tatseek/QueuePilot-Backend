@@ -1,6 +1,7 @@
 from app.models.benchmark import BenchmarkRun, ScalingEvent
 from app.models.event import JobEvent, OutboxEvent
 from app.models.job import Job, JobAttempt, JobStatus
+from app.models.scheduler import SchedulerState
 from app.models.tenant import Tenant, User
 from app.models.worker import Worker
 
@@ -12,6 +13,7 @@ __all__ = [
     "JobStatus",
     "OutboxEvent",
     "ScalingEvent",
+    "SchedulerState",
     "Tenant",
     "User",
     "Worker",

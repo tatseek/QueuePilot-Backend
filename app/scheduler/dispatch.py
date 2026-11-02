@@ -1,12 +1,16 @@
 import logging
+from collections import defaultdict
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from redis import Redis
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.settings import get_settings
-from app.models import Job, JobAttempt, JobEvent, JobStatus, OutboxEvent, Tenant, Worker
+from app.models import Job, JobAttempt, JobEvent, JobStatus, OutboxEvent, SchedulerState, Tenant, Worker
+from app.scheduler.policies import FairnessState, choose_fifo, choose_priority, choose_wdrr, choose_wrr
 
 logger = logging.getLogger("queuepilot.scheduler")
 
@@ -73,7 +77,31 @@ def available_slots(session: Session) -> int:
     return max(0, capacity - int(inflight or 0))
 
 
-def reserve_next_fifo(session: Session) -> bool:
+@dataclass
+class _JobView:
+    id: UUID
+    tenant_id: str
+    created_at: datetime
+    priority: int
+    cost: int
+
+
+@dataclass
+class _TenantView:
+    id: str
+    weight: int
+
+
+def _state_row(session: Session) -> SchedulerState:
+    state = session.get(SchedulerState, 1, with_for_update=True)
+    if state is None:
+        state = SchedulerState(id=1, policy="fifo", cursor=0, credits=0, deficits={})
+        session.add(state)
+        session.flush()
+    return state
+
+
+def _eligible_jobs(session: Session) -> list[Job]:
     now = _now()
     inflight_for_tenant = (
         select(func.count())
@@ -85,23 +113,80 @@ def reserve_next_fifo(session: Session) -> bool:
         .correlate(Tenant)
         .scalar_subquery()
     )
-    job = session.scalar(
-        select(Job)
-        .join(Tenant, Tenant.id == Job.tenant_id)
-        .where(
-            Job.status == JobStatus.QUEUED.value,
-            Job.cancellation_requested.is_(False),
-            or_(Job.retry_after.is_(None), Job.retry_after <= now),
-            inflight_for_tenant < Tenant.max_concurrent_jobs,
+    return list(
+        session.scalars(
+            select(Job)
+            .join(Tenant, Tenant.id == Job.tenant_id)
+            .where(
+                Job.status == JobStatus.QUEUED.value,
+                Job.cancellation_requested.is_(False),
+                or_(Job.retry_after.is_(None), Job.retry_after <= now),
+                inflight_for_tenant < Tenant.max_concurrent_jobs,
+            )
+            .order_by(Job.created_at, Job.id)
+            .limit(500)
         )
-        .order_by(Job.created_at, Job.id)
-        .limit(1)
-        .with_for_update(skip_locked=True, of=Job)
     )
-    if job is None:
+
+
+def _store_fairness(state: SchedulerState, fairness: FairnessState) -> None:
+    state.cursor = fairness.cursor
+    state.credits = fairness.credits
+    state.deficits = dict(fairness.deficits)
+    state.updated_at = _now()
+
+
+def reserve_next(session: Session) -> bool:
+    state = _state_row(session)
+    rows = _eligible_jobs(session)
+    tenants = list(session.scalars(select(Tenant).order_by(Tenant.created_at, Tenant.id)))
+    jobs_by_tenant: dict[str, list[_JobView]] = defaultdict(list)
+    views: list[_JobView] = []
+    for job in rows:
+        view = _JobView(
+            id=job.id,
+            tenant_id=str(job.tenant_id),
+            created_at=job.created_at,
+            priority=job.priority,
+            cost=max(1, job.estimated_cost),
+        )
+        views.append(view)
+        jobs_by_tenant[view.tenant_id].append(view)
+    tenant_views = [_TenantView(str(tenant.id), tenant.weight) for tenant in tenants]
+    fairness = FairnessState(
+        cursor=state.cursor,
+        credits=state.credits,
+        deficits=dict(state.deficits or {}),
+    )
+    if state.policy == "priority":
+        chosen = choose_priority(views)
+    elif state.policy == "wrr":
+        chosen = choose_wrr(tenant_views, jobs_by_tenant, fairness)
+    elif state.policy == "wdrr":
+        chosen = choose_wdrr(tenant_views, jobs_by_tenant, fairness)
+    else:
+        chosen = choose_fifo(views)
+    if chosen is None:
+        _store_fairness(state, fairness)
+        session.commit()
         return False
 
+    job = session.scalar(
+        select(Job)
+        .where(
+            Job.id == chosen.id,
+            Job.status == JobStatus.QUEUED.value,
+            Job.cancellation_requested.is_(False),
+        )
+        .with_for_update(skip_locked=True)
+    )
+    if job is None:
+        session.rollback()
+        return False
+
+    _store_fairness(state, fairness)
     settings = get_settings()
+    now = _now()
     attempt = JobAttempt(
         job_id=job.id,
         attempt_number=job.attempt_count + 1,
@@ -158,7 +243,7 @@ def dispatch_once(session: Session, redis: Redis) -> int:
     publish_outbox(session, redis)
     dispatched = 0
     for _ in range(available_slots(session)):
-        if not reserve_next_fifo(session):
+        if not reserve_next(session):
             break
         dispatched += 1
     publish_outbox(session, redis)

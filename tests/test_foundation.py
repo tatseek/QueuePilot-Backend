@@ -17,6 +17,7 @@ def test_metadata_contains_roadmap_tables() -> None:
         "outbox_events",
         "benchmark_runs",
         "scaling_events",
+        "scheduler_state",
     }
 
 
