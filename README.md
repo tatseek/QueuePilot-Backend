@@ -13,17 +13,21 @@ The dashboard lives in the separate frontend repository.
 
 ## Start locally
 
-From this directory:
+PostgreSQL and Redis run on this machine, with their files on `D:`. From this directory, with both already listening:
 
 ```powershell
-docker compose up -d postgres redis
-docker compose build api
-docker compose run --rm api alembic upgrade head
-docker compose run --rm api python -m app.services.seed
-docker compose up -d api
+.\.venv\Scripts\python -m alembic upgrade head
+.\.venv\Scripts\python -m app.services.seed
+.\.venv\Scripts\uvicorn app.main:app --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python -m app.scheduler.main
+.\.venv\Scripts\python -m app.workers.main
 ```
 
 Health: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
+
+Demo logins use password `queuepilot`: `a@queuepilot.local`, `b@queuepilot.local`, `c@queuepilot.local`, and `admin@queuepilot.local`.
+
+`docker-compose.yml` is still here for a machine where Docker already works. It is not required to run the API.
 
 Scheduler and worker processes stay idle until dispatch is implemented. Start them with the API when you want the full process list:
 
